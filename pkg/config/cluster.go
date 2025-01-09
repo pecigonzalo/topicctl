@@ -27,11 +27,12 @@ type ClusterConfig struct {
 // ClusterMeta contains (mostly immutable) metadata about the cluster. Inspired
 // by the meta fields in Kubernetes objects.
 type ClusterMeta struct {
-	Name        string `json:"name"`
-	Region      string `json:"region"`
-	Environment string `json:"environment"`
-	Shard       int    `json:"shard"`
-	Description string `json:"description"`
+	Name        string            `json:"name"`
+	Region      string            `json:"region"`
+	Environment string            `json:"environment"`
+	Shard       int               `json:"shard"`
+	Description string            `json:"description"`
+	Labels      map[string]string `json:"labels"`
 }
 
 // ClusterSpec contains the details necessary to communicate with a kafka cluster.
@@ -111,6 +112,10 @@ type SASLConfig struct {
 
 	// Password is the SASL password. Ignored if mechanism is AWS-MSK-IAM.
 	Password string `json:"password"`
+
+	// SecretsManagerArn is the ARN of the AWS Secrets Manager secret containing the SASL credentials.
+	// Ignored if mechanism is AWS-MSK-IAM. Username and Password will be ignored if this is set.
+	SecretsManagerArn string `json:"secretsManagerArn"`
 }
 
 // Validate evaluates whether the cluster config is valid.
@@ -165,6 +170,19 @@ func (c ClusterConfig) Validate() error {
 			(c.Spec.SASL.Username != "" || c.Spec.SASL.Password != "") {
 			log.Warn("Username and password are ignored if using SASL AWS-MSK-IAM")
 		}
+
+		if saslMechanism == admin.SASLMechanismAWSMSKIAM &&
+			c.Spec.SASL.SecretsManagerArn != "" {
+			log.Warn("SecretsManagerArn is ignored if using SASL AWS-MSK-IAM")
+		}
+
+		if c.Spec.SASL.SecretsManagerArn != "" &&
+			(c.Spec.SASL.Username != "" || c.Spec.SASL.Password != "") {
+			err = multierror.Append(
+				err,
+				errors.New("Username and password are ignored if using SecretsManagerArn"),
+			)
+		}
 	}
 
 	return err
@@ -180,31 +198,45 @@ func (c ClusterConfig) GetDefaultRetentionDropStepDuration() (time.Duration, err
 	return time.ParseDuration(c.Spec.DefaultRetentionDropStepDurationStr)
 }
 
+type AdminClientOpts struct {
+	ReadOnly                  bool
+	UsernameOverride          string
+	PasswordOverride          string
+	SecretsManagerArnOverride string
+	KafkaConnTimeout          time.Duration
+}
+
 // NewAdminClient returns a new admin client using the parameters in the current cluster config.
 func (c ClusterConfig) NewAdminClient(
 	ctx context.Context,
 	sess *session.Session,
-	readOnly bool,
-	usernameOverride string,
-	passwordOverride string,
+	opts AdminClientOpts,
 ) (admin.Client, error) {
 	if len(c.Spec.ZKAddrs) == 0 {
 		log.Debug("No ZK addresses provided, using broker admin client")
 
 		var saslUsername string
 		var saslPassword string
-		if usernameOverride != "" {
+		var secretsManagerArn string
+		if opts.UsernameOverride != "" {
 			log.Debugf("Setting SASL username from override value")
-			saslUsername = usernameOverride
+			saslUsername = opts.UsernameOverride
 		} else {
 			saslUsername = c.Spec.SASL.Username
 		}
 
-		if passwordOverride != "" {
+		if opts.PasswordOverride != "" {
 			log.Debugf("Setting SASL password from override value")
-			saslPassword = passwordOverride
+			saslPassword = opts.PasswordOverride
 		} else {
 			saslPassword = c.Spec.SASL.Password
+		}
+
+		if opts.SecretsManagerArnOverride != "" {
+			log.Debugf("Setting SASL SecretsManagerArn from override value")
+			secretsManagerArn = opts.SecretsManagerArnOverride
+		} else {
+			secretsManagerArn = c.Spec.SASL.SecretsManagerArn
 		}
 
 		var saslMechanism admin.SASLMechanism
@@ -231,14 +263,16 @@ func (c ClusterConfig) NewAdminClient(
 						SkipVerify: c.Spec.TLS.SkipVerify,
 					},
 					SASL: admin.SASLConfig{
-						Enabled:   c.Spec.SASL.Enabled,
-						Mechanism: saslMechanism,
-						Username:  saslUsername,
-						Password:  saslPassword,
+						Enabled:           c.Spec.SASL.Enabled,
+						Mechanism:         saslMechanism,
+						Username:          saslUsername,
+						Password:          saslPassword,
+						SecretsManagerArn: secretsManagerArn,
 					},
+					ConnTimeout: opts.KafkaConnTimeout,
 				},
 				ExpectedClusterID: c.Spec.ClusterID,
-				ReadOnly:          readOnly,
+				ReadOnly:          opts.ReadOnly,
 			},
 		)
 	} else {
@@ -251,7 +285,8 @@ func (c ClusterConfig) NewAdminClient(
 				BootstrapAddrs:    c.Spec.BootstrapAddrs,
 				ExpectedClusterID: c.Spec.ClusterID,
 				Sess:              sess,
-				ReadOnly:          readOnly,
+				ReadOnly:          opts.ReadOnly,
+				KafkaConnTimeout:  opts.KafkaConnTimeout,
 			},
 		)
 	}

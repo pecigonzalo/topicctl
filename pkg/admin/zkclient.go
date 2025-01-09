@@ -24,6 +24,7 @@ const (
 	assignmentPath    = "/admin/reassign_partitions"
 	electionPath      = "/admin/preferred_replica_election"
 	brokersPath       = "/brokers/ids"
+	controllerPath    = "/controller"
 	topicsPath        = "/brokers/topics"
 	clusterIDPath     = "/cluster/id"
 	brokerConfigsPath = "/config/brokers"
@@ -62,6 +63,7 @@ type ZKAdminClientConfig struct {
 	ExpectedClusterID string
 	Sess              *session.Session
 	ReadOnly          bool
+	KafkaConnTimeout  time.Duration
 }
 
 // NewZKAdminClient creates and returns a new Client instance.
@@ -135,7 +137,8 @@ func NewZKAdminClient(
 	client.bootstrapAddrs = bootstrapAddrs
 	client.Connector, err = NewConnector(
 		ConnectorConfig{
-			BrokerAddr: bootstrapAddrs[0],
+			BrokerAddr:  bootstrapAddrs[0],
+			ConnTimeout: config.KafkaConnTimeout,
 		},
 	)
 
@@ -293,6 +296,28 @@ func (c *ZKAdminClient) GetBrokerIDs(ctx context.Context) ([]int, error) {
 	return brokerIDs, nil
 }
 
+// GetControllerID gets ID of the active controller broker
+func (c *ZKAdminClient) GetControllerID(
+	ctx context.Context,
+) (int, error) {
+	zkControllerInfo := zkControllerInfo{}
+	zkControllerPath := c.zNode(controllerPath)
+
+	_, err := c.zkClient.GetJSON(
+		ctx,
+		zkControllerPath,
+		&zkControllerInfo,
+	)
+	if err != nil {
+		return -1, fmt.Errorf("Error getting zookeeper path %s: %+v",
+			zkControllerPath,
+			err,
+		)
+	}
+
+	return zkControllerInfo.BrokerID, nil
+}
+
 // GetConnector returns the Connector instance associated with this client.
 func (c *ZKAdminClient) GetConnector() *Connector {
 	return c.Connector
@@ -434,6 +459,13 @@ func (c *ZKAdminClient) CreateACLs(
 	acls []kafka.ACLEntry,
 ) error {
 	return errors.New("ACLs not yet supported with zk access mode; omit zk addresses to fix.")
+}
+
+func (c *ZKAdminClient) DeleteACLs(
+	ctx context.Context,
+	filters []kafka.DeleteACLsFilter,
+) (*kafka.DeleteACLsResponse, error) {
+	return nil, errors.New("ACLs not yet supported with zk access mode; omit zk addresses to fix.")
 }
 
 func (c *ZKAdminClient) GetUsers(

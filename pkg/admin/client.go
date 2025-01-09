@@ -15,6 +15,9 @@ type Client interface {
 	// GetBrokers gets information about all brokers in the cluster.
 	GetBrokers(ctx context.Context, ids []int) ([]BrokerInfo, error)
 
+	// GetControllerID get the active controller broker ID in the cluster.
+	GetControllerID(ctx context.Context) (int, error)
+
 	// GetBrokerIDs get the IDs of all brokers in the cluster.
 	GetBrokerIDs(ctx context.Context) ([]int, error)
 
@@ -77,11 +80,17 @@ type Client interface {
 		config kafka.TopicConfig,
 	) error
 
-	// Create ACLs creates ACLs in the cluster.
+	// CreateACLs creates ACLs in the cluster.
 	CreateACLs(
 		ctx context.Context,
 		acls []kafka.ACLEntry,
 	) error
+
+	// DeleteACLs deletes ACLs in the cluster.
+	DeleteACLs(
+		ctx context.Context,
+		filters []kafka.DeleteACLsFilter,
+	) (*kafka.DeleteACLsResponse, error)
 
 	// UpsertUser creates or updates an user in zookeeper.
 	UpsertUser(

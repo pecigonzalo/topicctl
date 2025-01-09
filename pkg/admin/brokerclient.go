@@ -110,6 +110,7 @@ func NewBrokerAdminClient(
 	if _, ok := maxVersions["DescribeUserScramCredentials"]; ok {
 		supportedFeatures.Users = true
 	}
+
 	log.Debugf("Supported features: %+v", supportedFeatures)
 
 	adminClient := &BrokerAdminClient{
@@ -229,6 +230,19 @@ func (c *BrokerAdminClient) GetBrokers(ctx context.Context, ids []int) (
 	}
 
 	return brokerInfos, nil
+}
+
+// GetControllerID gets ID of the active controller broker
+func (c *BrokerAdminClient) GetControllerID(ctx context.Context) (
+	int,
+	error,
+) {
+	metadataResp, err := c.getMetadata(ctx, nil)
+	if err != nil {
+		return -1, err
+	}
+
+	return metadataResp.Controller.ID, nil
 }
 
 // GetBrokerIDs get the IDs of all brokers in the cluster.
@@ -407,13 +421,16 @@ func (c *BrokerAdminClient) GetUsers(
 		return nil, err
 	}
 
-	if err = util.DescribeUserScramCredentialsResponseResultsError(resp.Results); err != nil {
-		return nil, err
-	}
-
 	results := []UserInfo{}
 
 	for _, result := range resp.Results {
+		if result.Error != nil {
+			if errors.Is(result.Error, kafka.ResourceNotFound) {
+				log.Debugf("Skipping over user %s because it does not exist", result.User)
+				continue
+			}
+			return nil, fmt.Errorf("Error getting description of user %s: %+v", result.User, result.Error)
+		}
 		var credentials []CredentialInfo
 		for _, credential := range result.CredentialInfos {
 			credentials = append(credentials, CredentialInfo{
@@ -808,7 +825,7 @@ func (c *BrokerAdminClient) GetACLs(
 	return aclinfos, nil
 }
 
-// CreateACLs creates an ACL in the cluster.
+// CreateACLs creates ACLs in the cluster.
 func (c *BrokerAdminClient) CreateACLs(
 	ctx context.Context,
 	acls []kafka.ACLEntry,
@@ -837,6 +854,28 @@ func (c *BrokerAdminClient) CreateACLs(
 		return fmt.Errorf("%+v", errors)
 	}
 	return nil
+}
+
+// DeleteACLs deletes ACLs in the cluster.
+func (c *BrokerAdminClient) DeleteACLs(
+	ctx context.Context,
+	filters []kafka.DeleteACLsFilter,
+) (*kafka.DeleteACLsResponse, error) {
+	if c.config.ReadOnly {
+		return nil, errors.New("Cannot delete ACL in read-only mode")
+	}
+
+	req := kafka.DeleteACLsRequest{
+		Filters: filters,
+	}
+	log.Debugf("DeleteACLs request: %+v", req)
+
+	resp, err := c.client.DeleteACLs(ctx, &req)
+	log.Debugf("DeleteACLs response: %+v (%+v)", resp, err)
+	if err != nil {
+		return nil, err
+	}
+	return resp, nil
 }
 
 func (c *BrokerAdminClient) GetAllTopicsMetadata(

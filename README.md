@@ -145,6 +145,10 @@ The `bootstrap` subcommand creates apply topic configs from the existing topics 
 cluster. This can be used to "import" topics not created or previously managed by topicctl.
 The output can be sent to either a directory (if the `--output` flag is set) or `stdout`.
 
+By default, this does not include internal topics such as `__consumer_offsets`.
+If you would like to have these topics included,
+pass the `--allow-internal-topics` flag.
+
 #### check
 
 ```
@@ -154,6 +158,26 @@ topicctl check [path(s) to topic config(s)]
 The `check` command validates that each topic config has the correct fields set and is
 consistent with the associated cluster config. Unless `--validate-only` is set, it then
 checks the topic config against the state of the topic in the corresponding cluster.
+
+#### create
+```
+topicctl create [flags] [command]
+```
+
+The `create` command creates resources in the cluster from a configuration file. 
+Currently, only ACLs are supported. The create command is separate from the apply
+command as it is intended for usage with immutable resources managed by topicctl.
+
+#### delete
+```
+topicctl delete [flags] [operation]
+```
+
+The `delete` subcommand deletes a particular resource type in the cluster.
+Currently, the following operations are supported:
+| Subcommand      | Description |
+| --------- | ----------- |
+| `delete acls [flags]` | Deletes ACL(s) in the cluster matching the provided flags |
 
 #### get
 
@@ -318,6 +342,26 @@ using [`os.ExpandEnv`](https://pkg.go.dev/os#ExpandEnv) at load time. The latter
 references of the form `$ENV_VAR_NAME` or `${ENV_VAR_NAME}` with the associated values from the
 environment.
 
+Additionally, the Amazon Resource Name (ARN) of a secret in AWS Secrets Manager can be provided
+instead of the username and password. Topicctl will then retrieve the secret value from Secrets 
+Manager and use it as the credentials. The secret in Secrets Manager must have a value in the format 
+shown below, identical to what [AWS MSK requires](https://docs.aws.amazon.com/msk/latest/developerguide/msk-password.html#msk-password-tutorial).
+```json
+{
+  "username": "alice",
+  "password": "alice-secret"
+}
+```
+
+An example of secrets manager being used can be seen below. Be sure to include the [6Random-Characters
+AWS Secrets Manager tacks on to the end of a secrets ARN](https://docs.aws.amazon.com/secretsmanager/latest/userguide/getting-started.html).
+```yaml
+sasl:
+    enabled: true
+    mechanism: SCRAM-SHA-512
+    secretsManagerArn: arn:aws:secretsmanager:<Region>:<AccountId>:secret:SecretName-6RandomCharacters
+```
+
 ### Topics
 
 Each topic is configured in a YAML file. The following is an
@@ -419,6 +463,47 @@ This subcommand will not rebalance a topic if:
 1. a topic's `retention.ms` in the kafka cluster does not match the topic's `retentionMinutes` setting in the topic config
 1. a topic does not exist in the kafka cluster
 
+### ACLs
+
+Sets of ACLs can be configured in a YAML file. The following is an
+annotated example:
+
+```yaml
+meta:
+  name: acls-test                       # Name of the group of ACLs
+  cluster: my-cluster                   # Name of the cluster
+  environment: stage                    # Environment of the cluster
+  region: us-west-2                     # Region of the cluster
+  description: |                        # Free-text description of the topic (optional)
+    Test topic in my-cluster.
+  labels:                               # Custom key-value pairs purposed for ACL bookkeeping (optional)
+    key1: value1
+    key2: value2
+
+spec:
+  acls:
+    - resource:
+        type: topic                     # Type of resource (topic, group, cluster, etc.)
+        name: test-topic                # Name of the resource to apply an ACL to
+        patternType: literal            # Type of pattern (literal, prefixed, etc.)
+        principal: User:my-user         # Principal to apply the ACL to
+        host: *                         # Host to apply the ACL to
+        permission: allow			    # Permission to apply (allow, deny)
+      operations:                       # List of operations to use for the ACLs
+        - read
+        - describe
+```
+
+The `cluster`, `environment`, and `region` fields are used for matching
+against a cluster config and double-checking that the cluster we're applying
+in is correct; they don't appear in any API calls.
+
+See the [Kafka documentation](https://kafka.apache.org/documentation/#security_authz_primitives)
+for more details on the parameters that can be set in the `acls` field.
+
+Multiple groups of ACLs can be included in the same file, separated by `---` lines, provided
+that they reference the same cluster.
+
 ## Tool safety
 
 The `bootstrap`, `get`, `repl`, and `tail` subcommands are read-only and should never make
@@ -440,6 +525,9 @@ The `apply` subcommand can make changes, but under the following conditions:
   clusters are accessed through the same address, e.g `localhost:2181`.
 
 The `reset-offsets` command can also make changes in the cluster and should be used carefully.
+
+The `create` command can be used to create new resources in the cluster. It cannot be used with
+mutable resources.
 
 ### Idempotency
 
@@ -554,7 +642,7 @@ make test
 
 You can change the Kafka version of the local cluster by setting the
 `KAFKA_IMAGE_TAG` environment variable when running `docker-compose up -d`. See the
-[`wurstmeister/kafka` dockerhub page](https://hub.docker.com/r/wurstmeister/kafka/tags) for more
+[`bitnami/kafka` dockerhub page](https://hub.docker.com/r/bitnami/kafka/tags) for more
 details on the available versions.
 
 #### Run against local cluster

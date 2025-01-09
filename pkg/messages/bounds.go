@@ -26,9 +26,6 @@ const (
 	// Parameters for backoff when there are connection errors
 	maxRetries               = 4
 	backoffInitSleepDuration = 200 * time.Millisecond
-
-	// Connection timeout
-	connTimeout = 10 * time.Second
 )
 
 // Bounds represents the start and end "bounds" of the messages in
@@ -174,7 +171,10 @@ func GetPartitionBounds(
 		}, nil
 	}
 
-	if minOffset > firstOffset {
+	// if minOffset is equal to lastOffset
+	// We read message (firstMessage) from minOffset+1 Which can lead to invalid reads
+	// Hence, We will not move first offset to match min offset if minOffset >= lastOffset
+	if minOffset > firstOffset && minOffset < lastOffset {
 		log.Debugf(
 			"Moving first offset forward to match min offset (%d)",
 			minOffset,
@@ -233,11 +233,18 @@ func GetPartitionBounds(
 		)
 	}
 
+	log.Debugf(
+		"Final offsets for %d: %d->%d",
+		partition,
+		firstMessage.Offset,
+		lastMessage.Offset,
+	)
+
 	return Bounds{
 		Partition:   partition,
 		FirstOffset: firstMessage.Offset,
 		FirstTime:   firstMessage.Time,
-		LastOffset:  lastMessage.Offset,
+		LastOffset:  lastMessage.Offset + 1,
 		LastTime:    lastMessage.Time,
 	}, nil
 }
@@ -274,6 +281,6 @@ func dialLeaderRetries(
 		return nil, fmt.Errorf("Error dialing partition %d: %+v", partition, err)
 	}
 
-	conn.SetDeadline(time.Now().Add(connTimeout))
+	conn.SetDeadline(time.Now().Add(connector.Config.ConnTimeout))
 	return conn, nil
 }

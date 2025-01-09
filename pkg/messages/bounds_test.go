@@ -17,6 +17,7 @@ func TestGetAllPartitionBounds(t *testing.T) {
 	ctx := context.Background()
 	connector, err := admin.NewConnector(admin.ConnectorConfig{
 		BrokerAddr: util.TestKafkaAddr(),
+		ConnTimeout: 10 * time.Second,
 	})
 	require.NoError(t, err)
 
@@ -64,16 +65,16 @@ func TestGetAllPartitionBounds(t *testing.T) {
 	bounds, err := GetAllPartitionBounds(ctx, connector, topicName, nil)
 	assert.NoError(t, err)
 
-	// The first partition gets 3 messages
+	// The first partition gets 3 messages. (i.e) earliest/first offset is 0 and latest/last is 3
 	assert.Equal(t, 4, len(bounds))
 	assert.Equal(t, 0, bounds[0].Partition)
 	assert.Equal(t, int64(0), bounds[0].FirstOffset)
-	assert.Equal(t, int64(2), bounds[0].LastOffset)
+	assert.Equal(t, int64(3), bounds[0].LastOffset)
 
-	// The last partition gets only 2 messages
+	// The last partition gets only 2 messages. (i.e) earliest/first offset is 0 and latest/last is 2
 	assert.Equal(t, 3, bounds[3].Partition)
 	assert.Equal(t, int64(0), bounds[3].FirstOffset)
-	assert.Equal(t, int64(1), bounds[3].LastOffset)
+	assert.Equal(t, int64(2), bounds[3].LastOffset)
 
 	boundsWithOffsets, err := GetAllPartitionBounds(
 		ctx,
@@ -87,13 +88,13 @@ func TestGetAllPartitionBounds(t *testing.T) {
 
 	assert.Equal(t, 4, len(boundsWithOffsets))
 
-	// Start of first partition is moved forward
+	// Start of first partition is moved forward. First partition has earliest offset is 0 and latest is 3
 	assert.Equal(t, 0, boundsWithOffsets[0].Partition)
 	assert.Equal(t, int64(1), boundsWithOffsets[0].FirstOffset)
-	assert.Equal(t, int64(2), boundsWithOffsets[0].LastOffset)
+	assert.Equal(t, int64(3), boundsWithOffsets[0].LastOffset)
 
-	// Other partition bounds are unchanged
+	// Other partition bounds are unchanged. Last partition has earliest offset is 0 and latest is 2
 	assert.Equal(t, 3, boundsWithOffsets[3].Partition)
 	assert.Equal(t, int64(0), boundsWithOffsets[3].FirstOffset)
-	assert.Equal(t, int64(1), boundsWithOffsets[3].LastOffset)
+	assert.Equal(t, int64(2), boundsWithOffsets[3].LastOffset)
 }

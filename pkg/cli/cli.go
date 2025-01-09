@@ -3,7 +3,6 @@ package cli
 import (
 	"context"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -15,6 +14,7 @@ import (
 	"github.com/briandowns/spinner"
 	"github.com/fatih/color"
 	"github.com/segmentio/kafka-go"
+	"github.com/segmentio/topicctl/pkg/acl"
 	"github.com/segmentio/topicctl/pkg/admin"
 	"github.com/segmentio/topicctl/pkg/apply"
 	"github.com/segmentio/topicctl/pkg/check"
@@ -79,6 +79,34 @@ func (c *CLIRunner) GetBrokers(ctx context.Context, full bool) error {
 	return nil
 }
 
+// Get active controller broker ID
+func (c *CLIRunner) GetControllerID(ctx context.Context, full bool) error {
+	c.startSpinner()
+
+	brokerID, err := c.adminClient.GetControllerID(ctx)
+	c.stopSpinner()
+	if err != nil {
+		return err
+	}
+
+	c.printer("Broker ID:\n%s", admin.FormatControllerID(brokerID))
+	return nil
+}
+
+// Get cluster ID
+func (c *CLIRunner) GetClusterID(ctx context.Context, full bool) error {
+	c.startSpinner()
+
+	clusterID, err := c.adminClient.GetClusterID(ctx)
+	c.stopSpinner()
+	if err != nil {
+		return err
+	}
+
+	c.printer("Cluster ID:\n%s", admin.FormatClusterID(clusterID))
+	return nil
+}
+
 // ApplyTopic does an apply run according to the spec in the argument config.
 func (c *CLIRunner) ApplyTopic(
 	ctx context.Context,
@@ -111,6 +139,65 @@ func (c *CLIRunner) ApplyTopic(
 	return nil
 }
 
+// CreateACL does an apply run according to the spec in the argument config.
+func (c *CLIRunner) CreateACL(
+	ctx context.Context,
+	aclAdminConfig acl.ACLAdminConfig,
+) error {
+	aclAdmin, err := acl.NewACLAdmin(
+		ctx,
+		c.adminClient,
+		aclAdminConfig,
+	)
+
+	if err != nil {
+		return err
+	}
+
+	highlighter := color.New(color.FgYellow, color.Bold).SprintfFunc()
+
+	c.printer(
+		"Starting creation for ACLs %s in environment %s, cluster %s",
+		highlighter(aclAdminConfig.ACLConfig.Meta.Name),
+		highlighter(aclAdminConfig.ACLConfig.Meta.Environment),
+		highlighter(aclAdminConfig.ACLConfig.Meta.Cluster),
+	)
+
+	err = aclAdmin.Create(ctx)
+
+	if err != nil {
+		return err
+	}
+
+	c.printer("Create completed successfully!")
+	return nil
+}
+
+// DeleteACL deletes a single ACL.
+func (c *CLIRunner) DeleteACL(
+	ctx context.Context,
+	aclAdminConfig acl.ACLAdminConfig,
+	filter kafka.DeleteACLsFilter,
+) error {
+	aclAdmin, err := acl.NewACLAdmin(
+		ctx,
+		c.adminClient,
+		aclAdminConfig,
+	)
+
+	if err != nil {
+		return err
+	}
+
+	err = aclAdmin.Delete(ctx, filter)
+	if err != nil {
+		return err
+	}
+
+	c.printer("Delete completed successfully!")
+	return nil
+}
+
 // BootstrapTopics creates configs for one or more topics based on their current state in the
 // cluster.
 func (c *CLIRunner) BootstrapTopics(
@@ -121,6 +208,7 @@ func (c *CLIRunner) BootstrapTopics(
 	excludeRegexpStr string,
 	outputDir string,
 	overwrite bool,
+	allowInternalTopics bool,
 ) error {
 	topicInfoObjs, err := c.adminClient.GetTopics(ctx, topics, false)
 	if err != nil {
@@ -139,7 +227,7 @@ func (c *CLIRunner) BootstrapTopics(
 	topicConfigs := []config.TopicConfig{}
 
 	for _, topicInfo := range topicInfoObjs {
-		if strings.HasPrefix(topicInfo.Name, "__") {
+		if !allowInternalTopics && strings.HasPrefix(topicInfo.Name, "__") {
 			// Never include underscore topics
 			continue
 		} else if !matchRegexp.MatchString(topicInfo.Name) {
@@ -177,7 +265,7 @@ func (c *CLIRunner) BootstrapTopics(
 
 			if isNew || overwrite {
 				log.Infof("Writing config to %s", outputPath)
-				err = ioutil.WriteFile(outputPath, []byte(yamlStr), 0644)
+				err = os.WriteFile(outputPath, []byte(yamlStr), 0644)
 				if err != nil {
 					return err
 				}

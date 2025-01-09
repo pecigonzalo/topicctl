@@ -35,7 +35,9 @@ type applyCmdConfig struct {
 	autoContinueRebalance        bool
 	retentionDropStepDurationStr string
 	skipConfirm                  bool
+	ignoreFewerPartitionsError   bool
 	sleepLoopDuration            time.Duration
+	failFast                     bool
 
 	shared sharedOptions
 
@@ -99,11 +101,23 @@ func init() {
 		false,
 		"Skip confirmation prompts during apply process",
 	)
+	applyCmd.Flags().BoolVar(
+		&applyConfig.ignoreFewerPartitionsError,
+		"ignore-fewer-partitions-error",
+		false,
+		"Don't return error when topic's config specifies fewer partitions than it currently has",
+	)
 	applyCmd.Flags().DurationVar(
 		&applyConfig.sleepLoopDuration,
 		"sleep-loop-duration",
 		10*time.Second,
 		"Amount of time to wait between partition checks",
+	)
+	applyCmd.Flags().BoolVar(
+		&applyConfig.failFast,
+		"fail-fast",
+		true,
+		"Fail upon the first error encountered during apply process",
 	)
 
 	addSharedConfigOnlyFlags(applyCmd, &applyConfig.shared)
@@ -125,6 +139,14 @@ func applyPreRun(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+func appendError(aggregatedErr error, err error) error {
+	if aggregatedErr == nil {
+		return err
+	}
+
+	return fmt.Errorf("%v\n%v", aggregatedErr, err)
+}
+
 func applyRun(cmd *cobra.Command, args []string) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -138,6 +160,8 @@ func applyRun(cmd *cobra.Command, args []string) error {
 
 	// Keep a cache of the admin clients with the cluster config path as the key
 	adminClients := map[string]admin.Client{}
+	// Keep track of any errors that occur during the apply process
+	var errs error
 
 	defer func() {
 		for _, adminClient := range adminClients {
@@ -160,7 +184,10 @@ func applyRun(cmd *cobra.Command, args []string) error {
 		for _, match := range matches {
 			matchCount++
 			if err := applyTopic(ctx, match, adminClients); err != nil {
-				return err
+				if applyConfig.failFast {
+					return err
+				}
+				errs = appendError(errs, err)
 			}
 		}
 	}
@@ -169,7 +196,7 @@ func applyRun(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("No topic configs match the provided args (%+v)", args)
 	}
 
-	return nil
+	return errs
 }
 
 func applyTopic(
@@ -197,9 +224,12 @@ func applyTopic(
 		adminClient, err = clusterConfig.NewAdminClient(
 			ctx,
 			nil,
-			applyConfig.dryRun,
-			applyConfig.shared.saslUsername,
-			applyConfig.shared.saslPassword,
+			config.AdminClientOpts{
+				ReadOnly:                  applyConfig.dryRun,
+				UsernameOverride:          applyConfig.shared.saslUsername,
+				PasswordOverride:          applyConfig.shared.saslPassword,
+				SecretsManagerArnOverride: applyConfig.shared.saslSecretsManagerArn,
+			},
 		)
 		if err != nil {
 			return err
@@ -228,6 +258,7 @@ func applyTopic(
 			AutoContinueRebalance:      applyConfig.autoContinueRebalance,
 			RetentionDropStepDuration:  applyConfig.retentionDropStepDuration,
 			SkipConfirm:                applyConfig.skipConfirm,
+			IgnoreFewerPartitionsError: applyConfig.ignoreFewerPartitionsError,
 			SleepLoopDuration:          applyConfig.sleepLoopDuration,
 			TopicConfig:                topicConfig,
 		}
